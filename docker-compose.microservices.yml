@@ -1,0 +1,196 @@
+version: '3.8'
+
+services:
+  # Envoy API网关
+  envoy-gateway:
+    build: ./envoy
+    ports:
+      - "8080:8080"   # API网关端口
+      - "9901:9901"   # 管理界面端口
+    networks:
+      - ai-network
+    depends_on:
+      - ocr-service
+      - face-service
+      - video-service
+    environment:
+      - ENVOY_LOG_LEVEL=info
+    restart: unless-stopped
+
+  # OCR微服务
+  ocr-service:
+    build: ./ocr-service
+    ports:
+      - "8001:8001"   # 独立运行端口
+    networks:
+      - ai-network
+    volumes:
+      - ./ocr-service/models:/app/models
+      - ./shared:/app/shared:ro
+    environment:
+      - API_KEY=your-secret-api-key
+      - HOST=0.0.0.0
+      - PORT=8001
+      - LOG_LEVEL=INFO
+      - MODELS_DIR=/app/models
+      - MAX_UPLOAD_SIZE_MB=10
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health', timeout=2) or exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # 人脸识别微服务
+  face-service:
+    build: ./face-service
+    ports:
+      - "8002:8002"   # 独立运行端口
+    networks:
+      - ai-network
+    volumes:
+      - ./face-service/data:/app/data
+      - ./face-service/models:/app/models
+      - ./shared:/app/shared:ro
+      - ./models/models:/app/models/models:ro  # 共享InsightFace模型
+    environment:
+      - API_KEY=your-secret-api-key
+      - HOST=0.0.0.0
+      - PORT=8002
+      - LOG_LEVEL=INFO
+      - MODELS_DIR=/app/models
+      - DATABASE_URL=sqlite:///data/faces.db
+      - INDEX_FILE_PATH=/app/data/faces.index
+      - MAX_UPLOAD_SIZE_MB=10
+      - FACE_RECOGNITION_THRESHOLD=0.6
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8002/health', timeout=2) or exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s  # 人脸识别服务需要更长的启动时间
+
+  # 视频分析微服务
+  video-service:
+    build: ./video-service
+    ports:
+      - "8003:8003"   # 独立运行端口
+    networks:
+      - ai-network
+    volumes:
+      - ./video-service/temp:/tmp/video_processing
+      - ./shared:/app/shared:ro
+    environment:
+      - API_KEY=your-secret-api-key
+      - HOST=0.0.0.0
+      - PORT=8003
+      - LOG_LEVEL=INFO
+      - REDIS_URL=redis://redis:6379
+      - FACE_SERVICE_URL=http://face-service:8002
+      - MAX_UPLOAD_SIZE_MB=100  # 视频文件允许更大
+    depends_on:
+      - redis
+      - face-service
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8003/health', timeout=3) or exit(1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Redis（用于视频分析任务队列）
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"   # Redis端口
+    networks:
+      - ai-network
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # RQ工作进程（处理视频分析任务）
+  rq-worker:
+    build: ./video-service
+    networks:
+      - ai-network
+    volumes:
+      - ./video-service/temp:/tmp/video_processing
+      - ./shared:/app/shared:ro
+    environment:
+      - API_KEY=your-secret-api-key
+      - REDIS_URL=redis://redis:6379
+      - FACE_SERVICE_URL=http://face-service:8002
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redis
+      - face-service
+    command: rq worker --url redis://redis:6379 video_analysis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r = redis.from_url('redis://redis:6379'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 监控：Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    networks:
+      - ai-network
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # 监控：Grafana
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    networks:
+      - ai-network
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+# 网络配置
+networks:
+  ai-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# 数据卷配置
+volumes:
+  redis-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local

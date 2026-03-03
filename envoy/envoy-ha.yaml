@@ -1,0 +1,177 @@
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+  - name: main_listener
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 8080
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          codec_type: AUTO
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: ai_service
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/v1/ocr"
+                route:
+                  cluster: ocr_service
+                  prefix_rewrite: "/v1/ocr"
+              - match:
+                  prefix: "/v1/face"
+                route:
+                  cluster: face_service
+                  prefix_rewrite: "/v1/face"
+              - match:
+                  prefix: "/v1/video"
+                route:
+                  cluster: video_service
+                  prefix_rewrite: "/v1/video"
+              - match:
+                  prefix: "/health"
+                direct_response:
+                  status: 200
+                  body:
+                    inline_string: '{"status": "ok", "service": "envoy-gateway"}'
+              - match:
+                  prefix: "/"
+                direct_response:
+                  status: 404
+                  body:
+                    inline_string: '{"error": "Not Found", "message": "Use /v1/ocr, /v1/face, or /v1/video endpoints"}'
+          http_filters:
+          - name: envoy.filters.http.lua
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+              inline_code: |
+                function envoy_on_request(request_handle)
+                  -- Skip API key check for health endpoint
+                  local path = request_handle:headers():get(":path")
+                  if path and (path == "/health" or path:find("^/health") == 1) then
+                    return
+                  end
+
+                  -- API Key validation
+                  local api_key = request_handle:headers():get("x-api-key")
+                  local valid_keys = {
+                    ["your-secret-api-key"] = true,
+                    ["test-key"] = true
+                  }
+
+                  if not api_key or not valid_keys[api_key] then
+                    request_handle:headers():add("content-type", "application/json")
+                    request_handle:respond(
+                      {[":status"] = "401"},
+                      '{"error": "Unauthorized", "message": "Invalid or missing API Key"}'
+                    )
+                  end
+
+                  -- Add request ID for tracing
+                  local request_id = tostring(math.random(1000000, 9999999))
+                  request_handle:headers():add("x-request-id", request_id)
+                  request_handle:headers():add("x-envoy-upstream-service-time", "0")
+
+                  -- 人脸识别操作的会话亲和性（基于人脸ID）
+                  local path = request_handle:headers():get(":path")
+                  if path and path:find("^/v1/face") == 1 then
+                    -- 对于人脸操作，使用一致性哈希确保相同人脸的操作路由到同一实例
+                    local face_id = request_handle:headers():get("x-face-id")
+                    if face_id then
+                      request_handle:headers():add("x-envoy-upstream-rq-hash-policy", "header")
+                      request_handle:headers():add("x-envoy-upstream-rq-hash-key", face_id)
+                    end
+                  end
+                end
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  - name: ocr_service
+    connect_timeout: 5s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: ocr_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: ocr-service
+                port_value: 8001
+    health_checks:
+    - timeout: 1s
+      interval: 10s
+      unhealthy_threshold: 3
+      healthy_threshold: 1
+      http_health_check:
+        path: "/health"
+        expected_statuses:
+          start: 200
+          end: 299
+
+  - name: face_service
+    connect_timeout: 5s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: face_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: face-service-1
+                port_value: 8002
+        - endpoint:
+            address:
+              socket_address:
+                address: face-service-2
+                port_value: 8003
+    health_checks:
+    - timeout: 1s
+      interval: 10s
+      unhealthy_threshold: 3
+      healthy_threshold: 1
+      http_health_check:
+        path: "/health"
+        expected_statuses:
+          start: 200
+          end: 299
+
+  - name: video_service
+    connect_timeout: 10s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: video_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: video-service
+                port_value: 8004
+    health_checks:
+    - timeout: 2s
+      interval: 15s
+      unhealthy_threshold: 3
+      healthy_threshold: 1
+      http_health_check:
+        path: "/health"
+        expected_statuses:
+          start: 200
+          end: 299

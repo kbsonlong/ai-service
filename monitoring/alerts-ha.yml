@@ -1,0 +1,64 @@
+groups:
+  - name: ai-services-alerts
+    rules:
+      # 服务健康检查告警
+      - alert: ServiceDown
+        expr: up{job="ai-services"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: '{{ $labels.instance }}'
+        annotations:
+          summary: "服务 {{ $labels.instance }} 下线"
+          description: "服务 {{ $labels.instance }} 已经下线超过1分钟"
+
+      # 高错误率告警
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "高错误率检测到"
+          description: "HTTP错误率超过5%"
+
+      # 高延迟告警
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "高延迟检测到"
+          description: "95%分位延迟超过2秒"
+
+      # 内存使用告警
+      - alert: HighMemoryUsage
+        expr: (process_resident_memory_bytes / process_virtual_memory_bytes) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "高内存使用率"
+          description: "内存使用率超过80%"
+
+      # 人脸识别服务特定告警
+      - alert: FaceServiceNoFacesRegistered
+        expr: face_registered_faces_total == 0
+        for: 10m
+        labels:
+          severity: info
+          service: face-service
+        annotations:
+          summary: "人脸识别服务没有注册任何人脸"
+          description: "人脸识别服务运行中但没有注册任何人脸"
+
+      # Redis连接告警
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis服务下线"
+          description: "Redis服务无法连接"

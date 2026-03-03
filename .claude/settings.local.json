@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker version)",
+      "Bash(docker-compose -f docker-compose.microservices.yml down)",
+      "Bash(docker-compose -f docker-compose.microservices.yml up -d)",
+      "Bash(find /tmp/claude-501 -name \"*.output\" -type f 2>/dev/null | head -10)",
+      "Bash(find /Users/zengshenglong/Code/PyWorkSpace/immich/ai-service -name \"requirements.txt\" -type f | xargs cat)"
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+# Prometheus配置
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'ai-service'
+
+# 告警规则文件
+rule_files:
+  - "alerts.yml"
+
+# 抓取配置
+scrape_configs:
+  # Prometheus自身监控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # AI服务监控
+  - job_name: 'ai-services'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets:
+        - 'ocr-service:8001'
+        - 'face-service:8002'
+        - 'video-service:8003'
+        labels:
+          service_type: 'ai-microservice'
+
+  # Envoy网关监控
+  - job_name: 'envoy-gateway'
+    metrics_path: '/stats/prometheus'
+    static_configs:
+      - targets: ['envoy-gateway:9901']
+        labels:
+          service_type: 'api-gateway'
+
+  # Redis监控
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+        labels:
+          service_type: 'cache'
+
+  # Node Exporter (系统指标)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service_type: 'system'
+
+# 远程写入配置（可选）
+remote_write:
+  - url: <remote-write-url>
+    basic_auth:
+      username: <username>
+      password: <password>
+
+# 远程读取配置（可选）
+remote_read:
+  - url: <remote-read-url>
+    basic_auth:
+      username: <username>
+      password: <password>
